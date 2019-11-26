@@ -23,13 +23,18 @@
 struct sockaddr_in to;
 struct sockaddr_in from;
 unsigned char bufTCP[BUF_LEN];
+unsigned char bufUDP[BUF_LEN];
 int tcpSock;
 int udpSock;
+int fd;
+socklen_t from_len;
 unsigned short udpServerPort;
 unsigned short udpClientPort;
 struct sockaddr_in toUDP;
 struct sockaddr_in fromUDP;
-
+char *audioBuf;
+char filePath[100] = "/tmp/";
+int gammaVal,targetBufferSize,remainingBufferSize;
 /* Helper Functions */
 // Setup TCP Network Connection
 int setupTCP(unsigned short port) {
@@ -101,7 +106,8 @@ int tcpReceive(int sock) {
 	}
 
 	// Check if File Exists
-	int fd = open(bufTCP, O_RDONLY);
+	strcat(filePath,bufTCP);
+	fd = open(filePath, O_RDONLY);
 	if(fd == -1) {
 		tcpTransmit(sock, "0");
 		return -1;
@@ -220,7 +226,23 @@ int main(int argc, char* argv[]) {
 		int pid = fork();
 		if(pid == 0) {	
 			fprintf(stderr, "Port Client: %d, Port Server: %d\n", udpClientPort, udpServerPort);
-			while(1) {}
+			while(1) {
+				//create Buffer with size equal to payload size from args
+				audioBuf = (char *)malloc(atoi(argv[2]));
+				while (read(fd, audioBuf,atoi(argv[2])) > 0) {
+					//send payload of audio to the client and the client will start playing
+					sendto(udpSock,audioBuf,sizeof(audioBuf),0,(struct sockaddr *)&toUDP,sizeof(toUDP));
+					//recv the 12 bytes of the feedback packet
+					from_len = sizeof(fromUDP);
+					int n = recvfrom(udpSock,bufUDP,sizeof(bufUDP),0, (struct sockaddr *)&fromUDP,&from_len);
+					//do the logic to get the number of remaining bytes
+					remainingBufferSize =(bufUDP[0] << 24) | (bufUDP[1] << 16) | (bufUDP[2] << 8) | bufUDP[3];
+					targetBufferSize = (bufUDP[4] << 24) | (bufUDP[5] << 16) | (bufUDP[6] << 8) | bufUDP[7];
+					gammaVal = (bufUDP[8] << 24) | (bufUDP[9] << 16) | (bufUDP[10] << 8) | bufUDP[11];
+
+
+				}
+			}
 		}
 	}
 }
