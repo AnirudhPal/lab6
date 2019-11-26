@@ -17,7 +17,7 @@
 
 /* Macro Vars */
 #define BUF_LEN	50
-#define TCP_SERVER_ACCEPT	50
+#define TCP_SERVER_ACCEPT 2
 
 /* Global Vars */
 struct sockaddr_in to;
