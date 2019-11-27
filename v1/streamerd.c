@@ -23,18 +23,20 @@
 struct sockaddr_in to;
 struct sockaddr_in from;
 unsigned char bufTCP[BUF_LEN];
-unsigned char bufUDP[BUF_LEN];
+char bufUDP[BUF_LEN];
 int tcpSock;
 int udpSock;
 int fd;
-socklen_t from_len;
+socklen_t from_len, to_len;
 unsigned short udpServerPort;
 unsigned short udpClientPort;
 struct sockaddr_in toUDP;
 struct sockaddr_in fromUDP;
-char *audioBuf;
+unsigned char *audioBuf;
 char filePath[100] = "/tmp/";
 int gammaVal,targetBufferSize,remainingBufferSize;
+int fromIP;
+
 /* Helper Functions */
 // Setup TCP Network Connection
 int setupTCP(unsigned short port) {
@@ -152,11 +154,6 @@ int setupUDP() {
 	toUDP.sin_addr.s_addr = INADDR_ANY;
 	toUDP.sin_port = htons((u_short)0);
 
-	// Set Up Struct from
-	memset(&fromUDP, 0, sizeof(fromUDP));
-	fromUDP.sin_family = AF_INET;
-	fromUDP.sin_addr.s_addr = INADDR_ANY;
-	fromUDP.sin_port = htons((u_short)0);
 
 	// Allocate Socket
 	udpSock =  socket(AF_INET, SOCK_DGRAM, 0);
@@ -199,6 +196,8 @@ int main(int argc, char* argv[]) {
 		// Accept Connection
 		int toLen = sizeof(to);
 		int newConn = accept(tcpSock, (struct sockaddr*)&to, &toLen);
+		//fprintf(stderr, "Received udp info: to %s %d\n", inet_ntoa(to.sin_addr), htons(to.sin_port));
+		fromIP = to.sin_addr.s_addr;
 
 		// Waits for Receive
 		if(tcpReceive(newConn) < 0)
@@ -225,24 +224,34 @@ int main(int argc, char* argv[]) {
 		// Send Audio (Fork)
 		int pid = fork();
 		if(pid == 0) {	
-			fprintf(stderr, "Port Client: %d, Port Server: %d\n", udpClientPort, udpServerPort);
-			while(1) {
+	                // Set Up Struct from
+	                memset(&fromUDP, 0, sizeof(fromUDP));
+	                fromUDP.sin_family = AF_INET;
+	                fromUDP.sin_addr.s_addr = fromIP;
+	                fromUDP.sin_port = htons(udpClientPort);
+                        int sz = atoi(argv[2]);
+			//fprintf(stderr, "Port Client: %d, Port Server: %d\n", udpClientPort, udpServerPort);
 				//create Buffer with size equal to payload size from args
-				audioBuf = (char *)malloc(atoi(argv[2]));
-				while (read(fd, audioBuf,atoi(argv[2])) > 0) {
-					//send payload of audio to the client and the client will start playing
-					sendto(udpSock,audioBuf,sizeof(audioBuf),0,(struct sockaddr *)&toUDP,sizeof(toUDP));
-					//recv the 12 bytes of the feedback packet
-					from_len = sizeof(fromUDP);
-					int n = recvfrom(udpSock,bufUDP,sizeof(bufUDP),0, (struct sockaddr *)&fromUDP,&from_len);
-					//do the logic to get the number of remaining bytes
-					remainingBufferSize =(bufUDP[0] << 24) | (bufUDP[1] << 16) | (bufUDP[2] << 8) | bufUDP[3];
-					targetBufferSize = (bufUDP[4] << 24) | (bufUDP[5] << 16) | (bufUDP[6] << 8) | bufUDP[7];
-					gammaVal = (bufUDP[8] << 24) | (bufUDP[9] << 16) | (bufUDP[10] << 8) | bufUDP[11];
+		        audioBuf = (char *)malloc(sizeof(char)*sz);
+		        memset(audioBuf, 0, sizeof(audioBuf));
+			int n;
+		        while ((n=read(fd, audioBuf, sz)) > 0) {
+		        	//send payload of audio to the client and the client will start playing
+		                //fprintf(stderr, "Sending audio %s of size %ld to %s %d\n", audioBuf, n, inet_ntoa(fromUDP.sin_addr), htons(fromUDP.sin_port));
+		                sleep(1);
+		        	sendto(udpSock, audioBuf,n,0,(struct sockaddr *)&fromUDP,sizeof(fromUDP));
+		        	//recv the 12 bytes of the feedback packet
+		        	to_len = sizeof(toUDP);
+		        	n = recvfrom(udpSock,bufUDP,sizeof(bufUDP),0, (struct sockaddr *)&toUDP,&to_len);
+		                fprintf(stderr, "Received feedback %s of size %ld to %s %d\n", bufUDP, n, inet_ntoa(toUDP.sin_addr), htons(toUDP.sin_port));
+		        	//do the logic to get the number of remaining bytes
+		        	remainingBufferSize =(bufUDP[0] << 24) | (bufUDP[1] << 16) | (bufUDP[2] << 8) | bufUDP[3];
+		        	targetBufferSize = (bufUDP[4] << 24) | (bufUDP[5] << 16) | (bufUDP[6] << 8) | bufUDP[7];
+		        	gammaVal = (bufUDP[8] << 24) | (bufUDP[9] << 16) | (bufUDP[10] << 8) | bufUDP[11];
 
-
-				}
 			}
 		}
 	}
+	close(tcpSock);
+	close(udpSock);
 }
