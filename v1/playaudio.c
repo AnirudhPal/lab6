@@ -1,3 +1,4 @@
+
 // Client Audio Player
 /* Import Libs */
 #include <stdio.h>
@@ -15,6 +16,7 @@
 #include <arpa/inet.h>
 #include <sys/time.h>
 #include <alsa/asoundlib.h>
+#include<semaphore.h>
 
 /* Macro Vars */
 #define BUF_LEN	50
@@ -32,23 +34,30 @@ unsigned short udpClientPort;
 struct sockaddr_in toUDP;
 struct sockaddr_in fromUDP;
 socklen_t from_len;
-unsigned char* audioBUF;
-unsigned char* recvBUF;
+char* audioBUF;
+char* recvBUF;
+char* audioBlock;
 unsigned char sendBUF[12];
 int gamma_val, target_buffer, buffer_size;
-
+static int block_size;
+sem_t mutex;
 static snd_pcm_t *mulawdev; 
 static snd_pcm_uframes_t mulawfrms;
+
+volatile sig_atomic_t audioBUF_size = 0;
 
 /* Helper Functions */
 // IO Handler
 void io_handler(int signal){
 	from_len = sizeof(fromUDP);
-        memset(recvBUF, 0, sizeof(recvBUF));
-        int n = recvfrom(udpSock, recvBUF, sizeof(recvBUF), 0, (struct sockaddr *)&fromUDP, &from_len);
-        memcpy(audioBUF, recvBUF+4, n - 4);
-      	
-        fprintf(stderr, "Size of audio buffer is %ld", sizeof(audioBUF));
+        memset(recvBUF, 0, buffer_size*1024);
+	sleep(0.1);	
+        int n = recvfrom(udpSock, recvBUF, buffer_size * 1024, 0, (struct sockaddr *)&fromUDP, &from_len);
+        sem_wait(&mutex);
+	strcat(audioBUF, recvBUF);
+	audioBUF_size += n;
+        //fprintf(stderr, "[IO Handler] size of audio buffer is %d \n",  audioBUF_size);
+      	sem_post(&mutex);
 
         memset(sendBUF, 0, sizeof(sendBUF));
 	int abufsize = sizeof(audioBUF) - n;
@@ -67,6 +76,9 @@ void io_handler(int signal){
 	sendBUF[9] = (gamma_val >> 16) & 0xFF;
 	sendBUF[10] = (gamma_val >> 8) & 0xFF;
 	sendBUF[11] = (gamma_val) & 0xFF;
+	toUDP.sin_addr.s_addr = fromUDP.sin_addr.s_addr;
+	//fprintf(stderr,"Port of client %d %s\n",htons(toUDP.sin_port),inet_ntoa(toUDP.sin_addr));
+
 	sendto(udpSock, sendBUF, sizeof(sendBUF), 0, (struct sockaddr *)&toUDP, sizeof(toUDP));
 
 }
@@ -161,7 +173,7 @@ int setupUDP() {
 	memset(&toUDP, 0, sizeof(toUDP));
 	toUDP.sin_family = AF_INET;
 	toUDP.sin_addr.s_addr = INADDR_ANY;
-	toUDP.sin_port = htons((u_short)0);
+	toUDP.sin_port = htons(udpServerPort);
 
 	// Set Up Struct from
 	memset(&fromUDP, 0, sizeof(fromUDP));
@@ -185,6 +197,7 @@ int setupUDP() {
 	// Get Port
 	int toLen = sizeof(toUDP);
 	getsockname(udpSock, (struct sockaddr *)&toUDP, &toLen);
+	fprintf(stderr,"Port of client %d %s",htons(toUDP.sin_port),inet_ntoa(toUDP.sin_addr));
  	if (fcntl(udpSock,F_SETOWN, getpid()) < 0){
         	perror("fcntl F_SETOWN");         
 		return -1;   
@@ -231,13 +244,17 @@ int main(int argc, char* argv[]) {
 	gamma_val = atoi(argv[5]);
 	target_buffer = atoi(argv[7]);
 	buffer_size = atoi(argv[6]);
-        size_t bs = (size_t)buffer_size;
+	block_size = atoi(argv[4]);
+        size_t bs;
 	mulawopen(&bs);             // initialize audio codec
         // Set size of audio buffer
-        audioBUF = (unsigned char *)malloc(target_buffer);   // audio buffer
+        audioBUF = (char *)malloc(target_buffer * 1024);   // audio buffer
         
         // Set size of tmp buffer to target
-        recvBUF = (unsigned char *)malloc(buffer_size);
+        recvBUF = (char *)malloc(buffer_size * 1024);
+        fprintf(stderr, "Block size is %d", block_size);
+        // Set size of block buffer to target
+        audioBlock = (char *)malloc(bs);
 
 	// Setup TCP Connection
 	if(setupTCP(argv[1], atoi(argv[2])) < 0)
@@ -254,7 +271,8 @@ int main(int argc, char* argv[]) {
 	// Setup UDP Connection
 	if(setupUDP() < 0)
 		return -1;
-
+	// Semaphore initialize
+	sem_init(&mutex,0,1);
         // Init signal handler
         signal(SIGIO,io_handler);
 
@@ -269,9 +287,25 @@ int main(int argc, char* argv[]) {
 
 	// Play Audio
         while(1){
-        	if (sizeof(audioBUF) >= target_buffer){
-			mulawwrite(audioBUF);
+		sleep(0.1);
+                sem_wait(&mutex);
+		//fprintf(stderr,"[Main Loop] The current size of audio buff is %d \n",audioBUF_size);
+        	if (audioBUF_size >= (target_buffer * 1024)){
+			//fprintf(stderr,"Inside the mulawrite\n");
+			int iter = (int)(audioBUF_size/block_size);
+		        //fprintf(stderr,"[Main Loop before play] No. of iters %d %d \n",iter, block_size);
+			// For each iteration copy 4 KB of block to be pase to mulawwrite and then remove those 4 KB from audio buffer 
+			for(int i=0; i<iter;i++){
+                            memset(audioBlock, 0, sizeof(audioBlock));
+			    memcpy(&audioBlock, &audioBUF, block_size);
+			    mulawwrite(audioBUF);
+			    audioBUF += block_size;
+			    audioBUF_size = audioBUF_size - block_size;
+			}
+		        //fprintf(stderr,"[Main Loop after play] The current size of audio buff is %d \n",audioBUF_size);
 		}
+      	        sem_post(&mutex);
 	}
-	free(audioBUF);
+	free(audioBlock);
+	sem_destroy(&mutex);
 }
