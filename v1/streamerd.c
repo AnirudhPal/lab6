@@ -43,6 +43,8 @@ struct timespec tim;
 // Dat file paramters
 int a = 1;
 int delta = 0.5;
+int epsilon = 0.1;
+int beta = 0.5;
 int mode;
 
 // Mode A
@@ -61,6 +63,16 @@ void apply_mode_B(int cliTargetBufferSize, int cliBufferOcc){
 	} else if (cliTargetBufferSize < cliBufferOcc){
 		lambda *= delta;
 	}
+}
+
+// Mode C
+void apply_mode_C(int cliTargetBufferSize, int cliBufferOcc){
+	lambda += epsilon * (cliTargetBufferSize - cliBufferOcc);
+}
+
+// Mode D
+void apply_mode_D(int cliTargetBufferSize, int cliBufferOcc, int cliGammaVal){
+	lambda += epsilon * (cliTargetBufferSize - cliBufferOcc) - beta * (lambda - cliGammaVal);
 }
 
 /* Helper Functions */
@@ -83,6 +95,10 @@ void io_handler(int signal){
 		apply_mode_A(cliTargetBufferSize, cliBufferOcc);
 	} else if (mode == 1){
 		apply_mode_B(cliTargetBufferSize, cliBufferOcc);
+	} else if (mode == 2){
+		apply_mode_C(cliTargetBufferSize, cliBufferOcc);
+	} else if (mode == 3){
+		apply_mode_D(cliTargetBufferSize, cliBufferOcc, cliGammaVal);
 	}
 
 	// Set new time for spacing between packets
