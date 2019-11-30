@@ -17,10 +17,12 @@
 #include <sys/time.h>
 #include <alsa/asoundlib.h>
 #include<semaphore.h>
+#include<time.h>
 
 /* Macro Vars */
 #define BUF_LEN	50
 #define TCP_SERVER_ACCEPT 2
+#define TCP_SERVER_END 5
 #define mulawwrite(x) snd_pcm_writei(mulawdev, x, mulawfrms)
 
 /* Global Vars */
@@ -38,47 +40,72 @@ char* audioBUF;
 char* recvBUF;
 char* audioBlock;
 unsigned char sendBUF[12];
-int gamma_val, target_buffer, buffer_size;
-static int block_size;
+int gammaVal, targetBUF, bufferSize;
+static int blockSize;
 sem_t mutex;
 static snd_pcm_t *mulawdev; 
 static snd_pcm_uframes_t mulawfrms;
+struct timespec tim;
 
-volatile sig_atomic_t audioBUF_size = 0;
+// Volatie vars
+volatile sig_atomic_t audioBUFSize = 0;
+volatile sig_atomic_t audioBUFRead = 0;
+volatile sig_atomic_t audioBUFWrite = 0;
 
 /* Helper Functions */
 // IO Handler
 void io_handler(int signal){
 	from_len = sizeof(fromUDP);
-        memset(recvBUF, 0, buffer_size*1024);
-	sleep(0.1);	
-        int n = recvfrom(udpSock, recvBUF, buffer_size * 1024, 0, (struct sockaddr *)&fromUDP, &from_len);
-        sem_wait(&mutex);
-	strcat(audioBUF, recvBUF);
-	audioBUF_size += n;
-        //fprintf(stderr, "[IO Handler] size of audio buffer is %d \n",  audioBUF_size);
-      	sem_post(&mutex);
-
-        memset(sendBUF, 0, sizeof(sendBUF));
-	int abufsize = sizeof(audioBUF) - n;
 	
+	//reset the receive audio packet
+        
+	memset(recvBUF, 0, bufferSize*1024);
+	
+	//receive the audio packet
+        
+	int n = recvfrom(udpSock, recvBUF, bufferSize * 1024, 0, (struct sockaddr *)&fromUDP, &from_len);
+	
+	//Block the play till the audiobuffer is filled with latest packet
+	
+	sem_wait(&mutex);
+	
+	//write to audio buffer from the receive buffer
+	
+	for (int i=0; i<n;i++){
+		audioBUF[audioBUFWrite++] = recvBUF[i];
+		
+		//Reset to 0 if buffer size is filled
+		if (audioBUFWrite ==( (bufferSize * 1024) -1)){
+			audioBUFWrite = 0;
+		}
+	}
+	audioBUFSize += n;
+        
+        memset(sendBUF, 0, sizeof(sendBUF));
+	int abufsize =  audioBUFSize- n;
+      	sem_post(&mutex);
+	
+	//Buffer Occupancy size
 	sendBUF[0] = (abufsize >> 24) & 0xFF;
 	sendBUF[1] = (abufsize >> 16) & 0xFF;
 	sendBUF[2] = (abufsize >> 8) & 0xFF;
 	sendBUF[3] = (abufsize) & 0xFF;
+	
+	//Target Buffer Occupancy size
+	sendBUF[4] = (targetBUF >> 24) & 0xFF;
+	sendBUF[5] = (targetBUF >> 16) & 0xFF;
+	sendBUF[6] = (targetBUF >> 8) & 0xFF;
+	sendBUF[7] = (targetBUF) & 0xFF;
+	
+	//Gamma val for the nanosleep update
+	sendBUF[8] = (gammaVal >> 24) & 0xFF;
+	sendBUF[9] = (gammaVal >> 16) & 0xFF;
+	sendBUF[10] = (gammaVal >> 8) & 0xFF;
+	sendBUF[11] = (gammaVal) & 0xFF;
 
-	sendBUF[4] = (target_buffer >> 24) & 0xFF;
-	sendBUF[5] = (target_buffer >> 16) & 0xFF;
-	sendBUF[6] = (target_buffer >> 8) & 0xFF;
-	sendBUF[7] = (target_buffer) & 0xFF;
-
-	sendBUF[8] = (gamma_val >> 24) & 0xFF;
-	sendBUF[9] = (gamma_val >> 16) & 0xFF;
-	sendBUF[10] = (gamma_val >> 8) & 0xFF;
-	sendBUF[11] = (gamma_val) & 0xFF;
+	//Send to the server the feedback packet
 	toUDP.sin_addr.s_addr = fromUDP.sin_addr.s_addr;
-	//fprintf(stderr,"Port of client %d %s\n",htons(toUDP.sin_port),inet_ntoa(toUDP.sin_addr));
-
+	
 	sendto(udpSock, sendBUF, sizeof(sendBUF), 0, (struct sockaddr *)&toUDP, sizeof(toUDP));
 
 }
@@ -139,13 +166,18 @@ int tcpTransmit(unsigned char* filename) {
 int tcpReceive() {
 	// Clean Buffer
 	memset(bufTCP, 0, BUF_LEN);
-
+	
 	// Get from Sender
 	if(read(tcpSock, bufTCP, BUF_LEN) < 0) {
-		perror("tcpReceive(): Error!");
+		//perror("tcpReceive(): Error!");
 		return -1;
 	}
-
+	//Check exit condition
+	if(bufTCP[0] == TCP_SERVER_END)
+	{
+		fprintf(stderr,"End of Pseudo streaming");
+		return 2;
+	}
 	// Check if Accept
 	if(bufTCP[0] == TCP_SERVER_ACCEPT) {
 		// Extract Port
@@ -207,12 +239,23 @@ int setupUDP() {
 	        perror("fcntl F_SETFL, O_NONBLOCK | FASYNC");
 	        return -1;
 	}
+	if (fcntl(tcpSock,F_SETOWN, getpid()) < 0){
+                perror("fcntl F_SETOWN");
+                return -1;
+        }
+
+	if (fcntl(tcpSock,F_SETFL, O_NONBLOCK | FASYNC) < 0 ){
+                perror("fcntl F_SETFL, O_NONBLOCK | FASYNC");
+                return -1;
+        }
+
 	// Update Port Variable
 	udpClientPort = ntohs(toUDP.sin_port);
 
 	return 1;
 }
 
+//Mulawopen to init Audio Buffer
 void mulawopen(size_t *bufsiz) {
          snd_pcm_hw_params_t *p;
          unsigned int rate = 8000;
@@ -229,10 +272,12 @@ void mulawopen(size_t *bufsiz) {
          return; 
 }  
 
+
 void mulawclose(void) {
         snd_pcm_drain(mulawdev);         
 	snd_pcm_close(mulawdev); 
 }
+
 
 /* Main */
 int main(int argc, char* argv[]) {
@@ -241,18 +286,20 @@ int main(int argc, char* argv[]) {
 		printf("usage: ./playaudio [IP of Server] [Port of Server] [Audio File] [Block Size] [Gammma] [Buffer Size] [Target Buffer] [Log File]\n");
 		return -1;
 	}
-	gamma_val = atoi(argv[5]);
-	target_buffer = atoi(argv[7]);
-	buffer_size = atoi(argv[6]);
-	block_size = atoi(argv[4]);
-        size_t bs;
-	mulawopen(&bs);             // initialize audio codec
+	gammaVal = atoi(argv[5]);
+	targetBUF = atoi(argv[7]);
+	bufferSize = atoi(argv[6]);
+	blockSize = atoi(argv[4]);
+        tim.tv_sec = 0;
+	tim.tv_nsec = 90000000;
+	size_t bs;
+	mulawopen(&bs);         	// initialize audio codec
         // Set size of audio buffer
-        audioBUF = (char *)malloc(target_buffer * 1024);   // audio buffer
+        audioBUF = (char *)malloc(bufferSize * 1024);   // audio buffer
         
         // Set size of tmp buffer to target
-        recvBUF = (char *)malloc(buffer_size * 1024);
-        fprintf(stderr, "Block size is %d", block_size);
+        recvBUF = (char *)malloc(bufferSize * 1024);
+
         // Set size of block buffer to target
         audioBlock = (char *)malloc(bs);
 
@@ -287,22 +334,34 @@ int main(int argc, char* argv[]) {
 
 	// Play Audio
         while(1){
-		sleep(0.1);
+		if(tcpReceive() == 2)
+		{
+			fprintf(stderr,"End of the reception \n"); 
+			break;
+		}
+		nanosleep(&tim,NULL);
                 sem_wait(&mutex);
-		//fprintf(stderr,"[Main Loop] The current size of audio buff is %d \n",audioBUF_size);
-        	if (audioBUF_size >= (target_buffer * 1024)){
-			//fprintf(stderr,"Inside the mulawrite\n");
-			int iter = (int)(audioBUF_size/block_size);
-		        //fprintf(stderr,"[Main Loop before play] No. of iters %d %d \n",iter, block_size);
+		
+		//check if target buf is greater than 24KB
+
+        	if (audioBUFSize >= (targetBUF * 1024)){
+			fprintf(stderr,"Inside the mulawrite\n");
+			int iter = (int)(audioBUFSize/blockSize);
+		        
 			// For each iteration copy 4 KB of block to be pase to mulawwrite and then remove those 4 KB from audio buffer 
 			for(int i=0; i<iter;i++){
-                            memset(audioBlock, 0, sizeof(audioBlock));
-			    memcpy(&audioBlock, &audioBUF, block_size);
-			    mulawwrite(audioBUF);
-			    audioBUF += block_size;
-			    audioBUF_size = audioBUF_size - block_size;
+                            memset(audioBlock, 0, blockSize);
+			    //Copy audio buffer to audioBlock in size of 4096 Bytes and send to 
+			    for(int j=0; j<blockSize;j++){
+				    audioBlock[j] = audioBUF[audioBUFRead++];
+				    if(audioBUFRead == ((bufferSize*1024) - 1)){
+					    audioBUFRead = 0;
+				    }
+			    }
+			    
+			    mulawwrite(audioBlock);
+			    audioBUFSize -= blockSize;
 			}
-		        //fprintf(stderr,"[Main Loop after play] The current size of audio buff is %d \n",audioBUF_size);
 		}
       	        sem_post(&mutex);
 	}
