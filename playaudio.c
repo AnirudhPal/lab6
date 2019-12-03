@@ -276,21 +276,18 @@ void removeCircBuffer() {
 
 	// Send to Sender
 	if(FEEDBACK) {
-		// Build Packet
-		
+		// Build Packet	
 		feedBack[0] = (bufferOccupancy >> 24) & 0xFF;
-    feedBack[1] = (bufferOccupancy >> 16) & 0xFF;
+    		feedBack[1] = (bufferOccupancy >> 16) & 0xFF;
 		feedBack[2] = (bufferOccupancy >> 8) & 0xFF;
-    feedBack[3] = (bufferOccupancy) & 0xFF;
-    
-    feedBack[4] = (tBufSize >> 24) & 0xFF;
+    		feedBack[3] = (bufferOccupancy) & 0xFF;
+    		feedBack[4] = (tBufSize >> 24) & 0xFF;
 		feedBack[5] = (tBufSize >> 16) & 0xFF;
 		feedBack[6] = (tBufSize >> 8) & 0xFF;
-    feedBack[7] = (tBufSize) & 0xFF;
-    
-    feedBack[8] = (gammA >>24) & 0xFF;
-	  feedBack[9] = (gammA >>16) & 0xFF;
-	  feedBack[10] = (gammA >>8) & 0xFF;
+    		feedBack[7] = (tBufSize) & 0xFF;
+    		feedBack[8] = (gammA >>24) & 0xFF;
+	  	feedBack[9] = (gammA >>16) & 0xFF;
+	  	feedBack[10] = (gammA >>8) & 0xFF;
 		feedBack[11] = (gammA) & 0xFF;
     
 		// Send
@@ -419,6 +416,7 @@ int setupUDP() {
 	// Update Port Variable
 	udpClientPort = ntohs(toUDP.sin_port);
 
+	/**
 	// FD Control UDP
 	if(fcntl(udpSock,F_SETOWN, getpid()) < 0) {
 		perror("setupUDP(): Error!");
@@ -437,7 +435,7 @@ int setupUDP() {
 	if(fcntl(tcpSock,F_SETFL, FASYNC) < 0 ) {	
 		perror("setupUDP(): Error!");
 		return -1;
-	}
+	}**/
 
 	// Return
 	return 1;
@@ -474,6 +472,12 @@ void grabArgs(char** args) {
 	C_BUF_SIZE = atoi(args[6]) * 1024;
 	strcpy(logFileName, args[8]);
 }
+
+void ioLoop() {
+	while(1)
+		ioHandler(0);
+}
+void* ioLoopP = &ioLoop;
 
 /* Main */
 int main(int argc, char* argv[]) {
@@ -512,7 +516,7 @@ int main(int argc, char* argv[]) {
 		return -1;
 
 	// Enable SIGIO
-	signal(SIGIO, ioHandler);
+	//signal(SIGIO, ioHandler);
 
 	// Set Time
 	tim.tv_sec = 0;
@@ -526,11 +530,18 @@ int main(int argc, char* argv[]) {
 	size_t bs;
 	mulawopen(&bs);
 	//printf("BS: %ld\n", bs);
+	
+
+	// Create Thread
+	pthread_t io_thread;
+	if(pthread_create(&io_thread, NULL, ioLoopP, NULL))
+		perror("main():");
 
 	// Play Audio
 	while(loop) {
 		// Sleep
-		nanosleep(&tim, NULL);
+		if(nanosleep(&tim, NULL) < 0)
+			perror("Fail");
 
 		// Consume
 		removeCircBuffer();

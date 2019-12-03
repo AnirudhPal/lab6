@@ -28,54 +28,113 @@ unsigned char bufTCP[BUF_LEN];
 unsigned char bufUDP[BUF_LEN];
 int tcpSock;
 int udpSock;
+int logFD;
 unsigned short udpServerPort;
 unsigned short udpClientPort;
 struct sockaddr_in toUDP;
 struct sockaddr_in fromUDP;
-unsigned int lambdA;
+float lambdA;
 unsigned int mode;
 unsigned int pldSize;
 unsigned char logFileName[100];
 unsigned char filePath[100] = "";
 struct timespec tim;
-unsigned int gammA;
+float gammA;
 unsigned int bufferOccupancy;
 unsigned int tBufSize;
 /* Helper Functions */
 
 // Dat file paramters
-int a = 1;
-int delta = 0.5;
-int epsilon = 0.1;
-int beta = 0.5;
-
+float a = 1;
+float delta = 0.5;
+float epsilon = 0.0002;
+float beta = 0.05;
 
 // Mode A
-void apply_mode_A(unsigned int tBufSize,unsigned int bufferOccupancy){
-	if (tBufSize > bufferOccupancy){
+void apply_mode_A(unsigned int tSize,unsigned int cSize){
+	// Go Slower
+	if(cSize > tSize)
+		lambdA -= a;
+
+	// Go Faster
+	if(cSize < tSize)
 		lambdA += a;
-	} else if (tBufSize < bufferOccupancy){
-		lambdA -=a;
-	}
+
+	// Fix
+	if(lambdA <= 0.0)
+		lambdA = a;
+
+	// Out to STDOUT
+	struct timeval now;
+	gettimeofday(&now, NULL);
+	printf("%ld %d\n", now.tv_usec + now.tv_sec * 1000000, cSize);
 }
 
 // Mode B
-void apply_mode_B(unsigned int tBufSize, unsigned int bufferOccupancy){
-	if (tBufSize > bufferOccupancy){
-		lambdA += a;
-	} else if (tBufSize < bufferOccupancy){
+void apply_mode_B(unsigned int tSize, unsigned int cSize){
+	// Go Slower Retarded
+	if(cSize > tSize)
 		lambdA *= delta;
-	}
+
+	// Go Faster
+	if(cSize < tSize)
+		lambdA += a;
+
+	// Out to STDOUT
+	struct timeval now;
+	gettimeofday(&now, NULL);
+	printf("%ld %d\n", now.tv_usec + now.tv_sec * 1000000, cSize);
 }
 
 // Mode C
-void apply_mode_C(unsigned int tBufSize, unsigned int bufferOccupancy){
-	lambdA += epsilon * (tBufSize - bufferOccupancy);
+void apply_mode_C(unsigned int tSize, unsigned int cSize){
+	// Go Slower
+	if(cSize > tSize)
+		lambdA -= epsilon * (cSize - tSize);
+
+	// Go Faster
+	if(cSize < tSize)
+		lambdA += epsilon * (tSize - cSize);
+
+	// Fix
+	if(lambdA <= 0.0)
+		lambdA = 10.0;
+
+	// Out to STDOUT
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        printf("%ld %d\n", now.tv_usec + now.tv_sec * 1000000, cSize);
 }
 
 // Mode D
-void apply_mode_D(unsigned int tBufSize,unsigned int bufferOccupancy,unsigned int gammA){
-	lambdA += epsilon * (tBufSize - bufferOccupancy) - beta * (lambdA - gammA);
+void apply_mode_D(unsigned int tSize,unsigned int cSize,unsigned int gammA){
+	float d;
+	if (lambdA > gammA)
+		d = lambdA - gammA;
+
+	if (lambdA < gammA)
+		d = -(gammA - lambdA);
+
+	if (lambdA == gammA)
+		d = 0.0;
+
+	// Go Slower
+	if(cSize > tSize)
+		lambdA = lambdA - epsilon * (cSize - tSize) - beta * d;
+
+	// Go Faster
+	if(cSize < tSize)
+		lambdA = lambdA + epsilon * (tSize - cSize) - beta * d;
+
+	// Fix
+	if(lambdA <= 0.0)
+		lambdA = 10.0;
+
+	// Out to STDOUT
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        printf("%ld %d\n", now.tv_usec + now.tv_sec * 1000000, cSize);
+        //printf("%ld %f %d %f\n", now.tv_usec + now.tv_sec * 1000000, lambdA, gammA, beta*(lambdA - gammA));
 }
 
 
@@ -96,28 +155,6 @@ void ioHandler(int sig) {
 	bufferOccupancy = (bufUDP[0] << 24) | (bufUDP[1] << 16) | (bufUDP[2] << 8) | bufUDP[3];
 	tBufSize = (bufUDP[4] << 24) | (bufUDP[5] << 16) | (bufUDP[6] << 8) | bufUDP[7];
 	gammA = (bufUDP[8] << 24) | (bufUDP[9] << 16) | (bufUDP[10] << 8) | bufUDP[11];
-
-	// Got IO
-	if (mode == 0)
-  {
-		apply_mode_A(tBufSize,bufferOccupancy);
-	}
-	else if  (mode == 1)
-  {
-		apply_mode_B(tBufSize,bufferOccupancy);
-	}
-	else if ( mode == 2)
-	{
-		apply_mode_C(tBufSize,bufferOccupancy);
-	}
-	else if (mode == 3)
-	{
-		apply_mode_D(tBufSize,bufferOccupancy,gammA);
-	}
-
-	printf("The lambda value is %d \n",lambdA);
-	
-	tim.tv_nsec = (1000/lambdA) * 100000;
 }
 
 // Setup TCP Network Connection
@@ -344,9 +381,6 @@ int main(int argc, char* argv[]) {
 			// Enable SIGIO
 			signal(SIGIO, ioHandler);
 
-			// Diagnostic Print
-			//fprintf(stderr, "IP Client: %s, Port Client: %d, Port Server: %d\n", inet_ntoa(toUDP.sin_addr), ntohs(toUDP.sin_port), udpServerPort);
-
 			// Set Packet Spacing
 			tim.tv_sec = 0;
 			double nsec = (1000.0/ (double)lambdA) * 1000000.0;	 
@@ -356,12 +390,37 @@ int main(int argc, char* argv[]) {
 			// Open File
 			int fd = open(filePath, O_RDONLY);
 
+			// Open Log File
+			logFD = open(logFileName, O_WRONLY);
+
 			// Empty Buffer
 			memset(bufUDP, 0, BUF_LEN);
 
 			// Send File
 			int n;
 			while((n = read(fd, bufUDP, pldSize)) > 0) {
+				// Method A
+				if(mode == 0)
+					apply_mode_A(tBufSize, bufferOccupancy);
+
+				// Method B
+				if(mode == 1)
+					apply_mode_B(tBufSize, bufferOccupancy);
+
+				// Method C
+				if(mode == 2)
+					apply_mode_C(tBufSize, bufferOccupancy);
+
+				// Method D
+				if(mode == 3)
+					apply_mode_D(tBufSize, bufferOccupancy, gammA);
+
+				// Set Packet Spacing
+				tim.tv_sec = 0;
+				double nsec = (1000.0/ (double)lambdA) * 1000000.0;	 
+				tim.tv_nsec = (long)nsec;
+				//printf("nsec: %ld\n", tim.tv_nsec);	
+
 				// Send
 				if(sendto(udpSock, bufUDP, n, 0,(struct sockaddr *)&toUDP, sizeof(toUDP)) < 0) {
 					perror("main(): Error!");
@@ -377,6 +436,9 @@ int main(int argc, char* argv[]) {
 
 			// Close File
 			close(fd);
+
+			// Close Log File
+			close(logFD);
 
 			// Terminate with TCP
 			char term[2];
